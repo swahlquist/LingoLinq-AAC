@@ -297,6 +297,34 @@ assert_literal_env() {
   return 0
 }
 
+# Read one describe into $READ_JSON, converting a gcloud failure into a FAILED ASSERTION
+# rather than an abort.
+#
+# WHY THIS IS NOT A PLAIN ASSIGNMENT. `json="$(gcloud ...)"` under `set -e` aborts the whole
+# script the moment gcloud exits non-zero, and it aborts BEFORE the "could not read live
+# configuration" guard in assert_env_json can run -- that guard is only reachable when gcloud
+# exits 0 with empty stdout. The script then exits with gcloud's OWN code (proven: a stub
+# exiting 9 produced rc=9 and no diagnostic), so a transient token refresh, an API 500 or a
+# network blip becomes an undiagnosable red deploy in the worst possible window: the LAST step,
+# after traffic has already shifted. A raw gcloud exit 2 would additionally masquerade as this
+# script's documented usage-error code.
+#
+# Same class as the REMOTE_EXTRA_DATA over-pin: a benign external condition must not turn a
+# healthy deploy red. Stderr is kept and surfaced, and the exit is this script's own 1.
+READ_JSON=""
+read_revision_json() {
+  local label="$1"; shift
+  local err rc=0
+  err="$(mktemp)"
+  READ_JSON="$("$@" 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL [$label] could not read live configuration (gcloud exit $rc): $(tr '\n' ' ' < "$err" | cut -c1-300)" >&2
+    rm -f "$err"; failed=1; READ_JSON=""; return 1
+  fi
+  rm -f "$err"
+  return 0
+}
+
 check_target() {
   local kind="$1" name="$2" json rev
   if [ "$kind" = service ]; then
@@ -308,13 +336,16 @@ check_target() {
     fi
     for rev in "${revs[@]}"; do
       echo "== $name (serving revision: $rev)"
-      json="$(gcloud run revisions describe "$rev" --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null)"
-      assert_env_json "$name/$rev" "$json"
+      read_revision_json "$name/$rev" gcloud run revisions describe "$rev" \
+        --project="$PROJECT" --region="$REGION" --format=json || continue
+      assert_env_json "$name/$rev" "$READ_JSON"
     done
   else
     echo "== $name (worker pool)"
-    json="$(gcloud beta run worker-pools describe "$name" --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null)"
-    assert_env_json "$name" "$json"
+    if read_revision_json "$name" gcloud beta run worker-pools describe "$name" \
+         --project="$PROJECT" --region="$REGION" --format=json; then
+      assert_env_json "$name" "$READ_JSON"
+    fi
   fi
 }
 

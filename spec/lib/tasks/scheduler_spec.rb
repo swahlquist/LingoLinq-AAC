@@ -62,11 +62,17 @@ describe 'scheduler:dispatch rake task' do
       stub_daily_collaborators
     end
 
-    it 'aborts non-zero when a task raises, naming the failed task' do
+    # Asserts STDERR and the exit STATUS, not stdout. The first version of this example matched
+    # /enforce_data_retention_policies/ on STDOUT, which cannot fail: run_task puts
+    # "[<name>] starting..." unconditionally before the block runs, so the pattern is present in
+    # every daily-window example whether or not anything failed. Proven by stubbing the task to
+    # SUCCEED and watching the assertion still pass. `abort` writes to stderr, and the status is
+    # the thing Cloud Run Jobs actually reads.
+    it 'aborts with status 1 and names the failed task in the failure summary' do
       allow(DataPolicyEnforcer).to receive(:enforce_retention!).and_raise(StandardError, 'boom')
       expect { Rake::Task['scheduler:dispatch'].invoke }
-        .to raise_error(SystemExit)
-        .and output(/enforce_data_retention_policies/).to_stdout
+        .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+        .and output(/task\(s\) FAILED:.*enforce_data_retention_policies/).to_stderr
     end
 
     it 'still runs the tasks queued AFTER a failing one' do

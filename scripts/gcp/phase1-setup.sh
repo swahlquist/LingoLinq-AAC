@@ -389,16 +389,35 @@ case "$PROJECT_ID" in
     # actually matters -- whether a provider already exists -- not on whether the project is one
     # of the two hard-coded names.
     if [ -n "${WIF_ALLOWED_REFS_EXPLICIT:-}" ] && [ "${CONFIRM_WIF_REF_CHANGE:-0}" != "1" ]; then
-      if gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
-           --project "$PROJECT_ID" --location=global --workload-identity-pool="$WIF_POOL" \
-           >/dev/null 2>&1; then
+      # DISTINGUISH "no provider" FROM "could not tell". Discarding stderr and treating every
+      # non-zero exit as absent makes PERMISSION_DENIED, expired credentials, a disabled API and
+      # a network failure indistinguishable from NOT_FOUND -- so the gate silently does not fire
+      # and the run rewrites deploy-gate 3's branch lock unconfirmed. That is a fail-OPEN in a
+      # block whose whole purpose is to fail closed. Only NOT_FOUND means absent; anything else
+      # is an inconclusive probe and stops the run.
+      _wif_probe_err="$(mktemp)"
+      _wif_probe_rc=0
+      gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
+        --project "$PROJECT_ID" --location=global --workload-identity-pool="$WIF_POOL" \
+        >/dev/null 2>"$_wif_probe_err" || _wif_probe_rc=$?
+      if [ "$_wif_probe_rc" -eq 0 ]; then
         echo "ERROR: refusing to set WIF_ALLOWED_REFS='$WIF_ALLOWED_REFS' on $PROJECT_ID." >&2
         echo "  A workload-identity provider ALREADY EXISTS there, so this run would rewrite a live" >&2
         echo "  branch lock rather than bootstrap a new one. Re-run with CONFIRM_WIF_REF_CHANGE=1" >&2
         echo "  only if you intend to change it, and update deploy-cloudrun.yml's branch map in the" >&2
         echo "  same change." >&2
+        rm -f "$_wif_probe_err"
+        exit 1
+      elif ! grep -qiE 'NOT_FOUND|was not found|does not exist' "$_wif_probe_err"; then
+        echo "ERROR: could not determine whether a workload-identity provider already exists on" >&2
+        echo "  $PROJECT_ID (gcloud exit $_wif_probe_rc). Refusing to set an explicit" >&2
+        echo "  WIF_ALLOWED_REFS on an INCONCLUSIVE probe, because a permission or credential" >&2
+        echo "  error would otherwise look identical to 'no provider' and silently skip this gate." >&2
+        echo "  gcloud said: $(tr '\n' ' ' < "$_wif_probe_err" | cut -c1-300)" >&2
+        rm -f "$_wif_probe_err"
         exit 1
       fi
+      rm -f "$_wif_probe_err"
     fi ;;
 esac
 # Render the ref clause in the exact shape the live providers carry (verified 2026-09-03):

@@ -343,7 +343,8 @@ jobs:
       # worker pool ONLY, never the migration Job (which boots Rails for db:migrate but needs none of
       # these). Seeded by scripts/gcp/phase4-seed-app-secrets.sh (Render-prod-first; AWS_KEY/AWS_SECRET
       # are the NEW least-priv IAM user, scripts/gcp/iam/). Every name here is asserted to have a
-      # SEEDED VERSION in Secret Manager by the "Assert referenced secrets exist" step before deploy.
+      # SEEDED VERSION in Secret Manager by the "Assert referenced secrets exist + assemble
+      # runtime env" step before deploy.
       # MAPS_KEY is intentionally NOT here: it is a client-public key emitted at asset-precompile
       # (globals.js.erb), not read at runtime, so it is passed as a Docker build ARG in the
       # "Build and push image" step (alongside DEFAULT_HOST), not mounted at runtime.
@@ -1198,7 +1199,8 @@ jobs:
           fi
           echo "Scheduler Job $SCHEDULER_JOB runs $IMAGE with $(printf '%s\n' "$landed" | grep -c .) secret-backed env vars."
 
-      # Read back what actually landed. The "verify secrets are seeded" step above proves the
+      # Read back what actually landed. The "Assert referenced secrets exist + assemble runtime
+      # env" step above proves the
       # secrets EXIST in Secret Manager before deploying; it cannot prove the deployed revision
       # still REFERENCES them. Revision lingolinq-web-00014 (2026-08-04) dropped exactly
       # BEDROCK_AWS_KEY and BEDROCK_AWS_SECRET while every secret container stayed healthy, and
@@ -1248,7 +1250,8 @@ jobs:
           # values: two buckets, the CDN, the Sentry env, and REMOTE_EXTRA_DATA. A previous
           # revision of this block pinned four and omitted REMOTE_EXTRA_DATA -- the one with a
           # production incident behind it (its absence zeroed 1754 of 2061 button sets in
-          # PR #724). The "Assemble runtime env vars" step proves the VARIABLE is non-blank;
+          # PR #724). The "Assert referenced secrets exist + assemble runtime env" step proves
+          # the VARIABLE is non-blank;
           # only this readback proves the env var LANDED on the revision. Adding a sixth moved
           # value without a line here reopens exactly that gap.
           #
